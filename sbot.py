@@ -10,7 +10,7 @@ import pytz
 TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
 TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
-# 150 large & mid-cap liquid NSE stocks
+# 150 liquid NSE stocks (TATAMOTORS removed)
 SYMBOLS = [
     "RELIANCE.NS","TCS.NS","HDFCBANK.NS","INFY.NS","ICICIBANK.NS","HINDUNILVR.NS",
     "ITC.NS","SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS","LT.NS","AXISBANK.NS",
@@ -46,10 +46,19 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-def compute_technicals(df):
+def flatten_columns(df):
+    """Ensure columns are simple strings, not MultiIndex."""
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.droplevel(1)
-    close = df['Close']; high = df['High']; low = df['Low']; vol = df['Volume']
+        # Join multi-level columns with underscore, then strip trailing underscore
+        df.columns = ['_'.join(col).strip('_') for col in df.columns.values]
+    return df
+
+def compute_technicals(df):
+    df = flatten_columns(df)
+    close = df['Close']
+    high = df['High']
+    low = df['Low']
+    vol = df['Volume']
 
     df['ema20'] = close.ewm(span=20, adjust=False).mean()
     df['ema50'] = close.ewm(span=50, adjust=False).mean()
@@ -74,7 +83,6 @@ def compute_technicals(df):
     return df
 
 def get_basic_fundamentals(symbol):
-    """Return True if stock passes basic fundamental filters."""
     try:
         info = yf.Ticker(symbol).info
         pe = info.get('trailingPE')
@@ -91,21 +99,21 @@ def generate_signals():
     for sym in SYMBOLS:
         try:
             df = yf.download(sym, period="6mo", interval="1d", progress=False)
-            if len(df) < 100: continue
+            if df.empty or len(df) < 100:
+                continue
             df = compute_technicals(df)
             latest = df.iloc[-1]
 
-            if not get_basic_fundamentals(sym): continue
+            # Fundamental filter (skip if not passed)
+            if not get_basic_fundamentals(sym):
+                continue
 
-            # --- LENIENT VOLUME: 0.9x average (most days have some volume) ---
+            # Lenient volume condition
             vol_ok = latest['Volume'] > 0.9 * latest['vol_avg20']
 
             # --- CALL criteria ---
-            # Uptrend: close above 50-EMA (20-EMA > 50-EMA is optional here to get more signals)
-            uptrend = latest['Close'] > latest['ema50']
-            # RSI 40-70 (wider range)
+            uptrend = (latest['Close'] > latest['ema50'])
             rsi_call_ok = 40 < latest['rsi'] < 70
-            # Within 8% of 20-day high (still relatively strong)
             near_high = latest['Close'] >= latest['high20'] * 0.92
             if uptrend and rsi_call_ok and vol_ok and near_high:
                 entry = round(latest['Close'], 2)
@@ -115,9 +123,8 @@ def generate_signals():
                 calls.append((sym.replace('.NS',''), entry, target, sl))
 
             # --- PUT criteria ---
-            downtrend = latest['Close'] < latest['ema50']
+            downtrend = (latest['Close'] < latest['ema50'])
             rsi_put_ok = 30 < latest['rsi'] < 60
-            # Within 8% above 20-day low
             near_low = latest['Close'] <= latest['low20'] * 1.08
             if downtrend and rsi_put_ok and vol_ok and near_low:
                 entry = round(latest['Close'], 2)
@@ -125,10 +132,10 @@ def generate_signals():
                 target = round(entry - 4 * atr, 2)
                 sl = round(entry + 2 * atr, 2)
                 puts.append((sym.replace('.NS',''), entry, target, sl))
-        except:
+        except Exception as e:
+            print(f"Error {sym}: {e}")
             continue
 
-    # Sort by volume (strongest first)
     calls.sort(key=lambda x: x[1], reverse=True)
     puts.sort(key=lambda x: x[1], reverse=True)
     return calls[:5], puts[:5]
