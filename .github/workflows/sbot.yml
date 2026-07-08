@@ -1,8 +1,8 @@
-name: SBot - Daily Signals
+name: NSE Daily Signals
 
 on:
   schedule:
-    - cron: '45 3 * * *'   # 9:15 AM IST daily
+    - cron: '45 3 * * *'
   workflow_dispatch:
 
 jobs:
